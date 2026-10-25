@@ -6,7 +6,7 @@ For more details about this api, please refer to the documentation at
 https://github.com/zabuldon/teslajsonpy
 """
 import logging
-from typing import Callable
+from typing import Callable, List, Optional
 
 from teslajsonpy.const import DEFAULT_ENERGYSITE_NAME, RESOURCE_TYPE
 
@@ -192,6 +192,79 @@ class PowerwallSite(EnergySite):
     def version(self) -> float:
         """Return firmware version."""
         return self._site_config.get("version")
+
+    @property
+    def storm_mode_capable(self) -> Optional[bool]:
+        """Return whether the site supports Storm Watch."""
+        capable = self._site_data.get("storm_mode_capable")
+        if capable is not None:
+            return capable
+        capable = self._site_config.get("components", {}).get("storm_mode_capable")
+        if capable is not None:
+            return capable
+        return (
+            self._site_config.get("user_settings", {}).get("storm_mode_enabled")
+            is not None
+        )
+
+    @property
+    def storm_mode_enabled(self) -> Optional[bool]:
+        """Return the Storm Watch enabled setting, when reported."""
+        return self._site_config.get("user_settings", {}).get("storm_mode_enabled")
+
+    @property
+    def storm_mode_active(self) -> Optional[bool]:
+        """Return the current Storm Watch active state, when reported."""
+        return self._site_data.get("storm_mode_active")
+
+    @property
+    def storm_mode_states(self) -> Optional[List[dict]]:
+        """Return the current Storm Watch states, when reported."""
+        return self._site_data.get("storm_mode_states", [])
+
+    async def set_storm_mode(self, enabled: bool) -> bool:
+        """Set Storm Watch and report whether Tesla accepted the change."""
+        data = await self._send_command(
+            "STORM_MODE_SETTINGS",
+            path_vars={"site_id": self.energysite_id},
+            enabled=bool(enabled),
+        )
+        response = data.get("response") if isinstance(data, dict) else None
+        if not isinstance(response, dict):
+            return False
+
+        code_key = next(
+            (
+                key
+                for key in response
+                if isinstance(key, str) and key.lower() == "code"
+            ),
+            None,
+        )
+        result = response.get("result")
+        if code_key is None:
+            accepted = result is True
+        else:
+            code = response[code_key]
+            if isinstance(code, bool):
+                accepted_code = False
+            elif isinstance(code, int):
+                accepted_code = code in (200, 201)
+            elif isinstance(code, str):
+                accepted_code = code.strip() in ("200", "201")
+            else:
+                accepted_code = False
+            accepted = accepted_code and (
+                "result" not in response or result is True
+            )
+
+        if not accepted:
+            return False
+
+        self._site_config.setdefault("user_settings", {})[
+            "storm_mode_enabled"
+        ] = bool(enabled)
+        return True
 
     async def set_operation_mode(self, real_mode: str) -> None:
         """Set operation mode of Powerwall.
