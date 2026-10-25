@@ -7,13 +7,12 @@ https://github.com/zabuldon/teslajsonpy
 """
 import asyncio
 import base64
-import calendar
 import datetime
 import hashlib
 import logging
 import secrets
 import time
-from typing import Dict, Text
+from typing import Dict, Optional, Text
 
 from json import JSONDecodeError
 import aiohttp
@@ -94,7 +93,7 @@ class Connection:
 
     async def post(self, command, method="post", data=None, url=""):
         """Post data to API."""
-        now = calendar.timegm(datetime.datetime.now().timetuple())
+        now = int(time.time())
         _LOGGER.debug(
             "Token expiration in %s",
             str(datetime.timedelta(seconds=self.expiration - now)),
@@ -170,13 +169,34 @@ class Connection:
         if expiration > 0:
             self.expiration = expiration
         else:
-            now = calendar.timegm(datetime.datetime.now().timetuple())
+            now = int(time.time())
             self.expiration = now + expires_in
+        jwt_expiration = self.__jwt_expiration(access_token)
+        if jwt_expiration is not None:
+            self.expiration = min(self.expiration, jwt_expiration)
         self.head = {
             "Authorization": f"Bearer {access_token}",
             "User-Agent": self.user_agent,
             "X-Tesla-User-Agent": self.user_agent
         }
+
+    @staticmethod
+    def __jwt_expiration(access_token: Text) -> Optional[int]:
+        """Return a JWT expiry when its payload can be safely decoded."""
+        parts = access_token.split(".")
+        if len(parts) != 3 or not parts[1]:
+            return None
+        try:
+            payload = base64.urlsafe_b64decode(
+                parts[1] + "=" * (-len(parts[1]) % 4)
+            )
+            claims = orjson.loads(payload)
+        except ValueError:
+            return None
+        expiry = claims.get("exp") if isinstance(claims, dict) else None
+        if isinstance(expiry, (int, float)) and not isinstance(expiry, bool):
+            return int(expiry)
+        return None
 
     async def __open(
         self,
